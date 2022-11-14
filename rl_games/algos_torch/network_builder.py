@@ -1,5 +1,8 @@
+from collections import OrderedDict
+import json
 from rl_games.common import object_factory
 from rl_games.algos_torch import torch_ext
+from robomimic.config.base_config import config_factory
 
 import torch
 import torch.nn as nn
@@ -11,6 +14,10 @@ import numpy as np
 from rl_games.algos_torch.d2rl import D2RLNet
 from rl_games.algos_torch.sac_helper import  SquashedNormal
 from rl_games.common.layers.recurrent import  GRUWithDones, LSTMWithDones
+import robomimic.utils.file_utils as FileUtils
+import robomimic.utils.obs_utils as ObsUtils
+import robomimic.utils.tensor_utils as TensorUtils
+import robomimic.utils.torch_utils as TorchUtils
 
 
 def _create_initializer(func, **kwargs):
@@ -83,12 +90,12 @@ class NetworkBuilder:
             if name == 'gru':
                 return GRUWithDones(input_size=input, hidden_size=units, num_layers=layers)
 
-        def _build_sequential_mlp(self, 
-        input_size, 
-        units, 
+        def _build_sequential_mlp(self,
+        input_size,
+        units,
         activation,
         dense_func,
-        norm_only_first_layer=False, 
+        norm_only_first_layer=False,
         norm_func_name = None):
             print('build mlp:', input_size)
             in_size = input_size
@@ -101,7 +108,7 @@ class NetworkBuilder:
                 if not need_norm:
                     continue
                 if norm_only_first_layer and norm_func_name is not None:
-                   need_norm = False 
+                   need_norm = False
                 if norm_func_name == 'layer_norm':
                     layers.append(torch.nn.LayerNorm(unit))
                 elif norm_func_name == 'batch_norm':
@@ -110,11 +117,11 @@ class NetworkBuilder:
 
             return nn.Sequential(*layers)
 
-        def _build_mlp(self, 
-        input_size, 
-        units, 
+        def _build_mlp(self,
+        input_size,
+        units,
         activation,
-        dense_func, 
+        dense_func,
         norm_only_first_layer=False,
         norm_func_name = None,
         d2rl=False):
@@ -138,9 +145,9 @@ class NetworkBuilder:
             in_channels = input_shape[0]
             layers = []
             for conv in convs:
-                layers.append(conv_func(in_channels=in_channels, 
-                out_channels=conv['filters'], 
-                kernel_size=conv['kernel_size'], 
+                layers.append(conv_func(in_channels=in_channels,
+                out_channels=conv['filters'],
+                kernel_size=conv['kernel_size'],
                 stride=conv['strides'], padding=conv['padding']))
                 conv_func=torch.nn.Conv2d
                 act = self.activations_factory.create(activation)
@@ -149,7 +156,7 @@ class NetworkBuilder:
                 if norm_func_name == 'layer_norm':
                     layers.append(torch_ext.LayerNorm2d(in_channels))
                 elif norm_func_name == 'batch_norm':
-                    layers.append(torch.nn.BatchNorm2d(in_channels))  
+                    layers.append(torch.nn.BatchNorm2d(in_channels))
             return nn.Sequential(*layers)
 
         def _build_cnn1d(self, input_shape, convs, activation, norm_func_name=None):
@@ -164,7 +171,7 @@ class NetworkBuilder:
                 if norm_func_name == 'layer_norm':
                     layers.append(torch.nn.LayerNorm(in_channels))
                 elif norm_func_name == 'batch_norm':
-                    layers.append(torch.nn.BatchNorm2d(in_channels))  
+                    layers.append(torch.nn.BatchNorm2d(in_channels))
             return nn.Sequential(*layers)
 
 
@@ -183,110 +190,151 @@ class A2CBuilder(NetworkBuilder):
             self.num_seqs = num_seqs = kwargs.pop('num_seqs', 1)
             NetworkBuilder.BaseNetwork.__init__(self)
             self.load(params)
-            self.actor_cnn = nn.Sequential()
-            self.critic_cnn = nn.Sequential()
-            self.actor_mlp = nn.Sequential()
-            self.critic_mlp = nn.Sequential()
-            
-            if self.has_cnn:
-                if self.permute_input:
-                    input_shape = torch_ext.shape_whc_to_cwh(input_shape)
-                cnn_args = {
-                    'ctype' : self.cnn['type'], 
-                    'input_shape' : input_shape, 
-                    'convs' :self.cnn['convs'], 
-                    'activation' : self.cnn['activation'], 
-                    'norm_func_name' : self.normalization,
-                }
-                self.actor_cnn = self._build_conv(**cnn_args)
+            if self.ckpt_path is not None:
+                device = TorchUtils.get_torch_device(try_to_use_cuda=True)
+                # restore policy
+                self.policy, ckpt_dict = FileUtils.policy_from_checkpoint(
+                    ckpt_path=self.ckpt_path, device=device, verbose=True
+                )
+                self.critic_cnn = nn.Sequential()
+                self.critic_mlp = nn.Sequential()
 
-                if self.separate:
+                if self.has_cnn:
+                    if self.permute_input:
+                        input_shape = torch_ext.shape_whc_to_cwh(input_shape)
+                    cnn_args = {
+                        'ctype' : self.cnn['type'],
+                        'input_shape' : input_shape,
+                        'convs' :self.cnn['convs'],
+                        'activation' : self.cnn['activation'],
+                        'norm_func_name' : self.normalization,
+                    }
                     self.critic_cnn = self._build_conv( **cnn_args)
 
-            mlp_input_shape = self._calc_input_size(input_shape, self.actor_cnn)
-
-            in_mlp_shape = mlp_input_shape
-            if len(self.units) == 0:
-                out_size = mlp_input_shape
-            else:
-                out_size = self.units[-1]
-
-            if self.has_rnn:
-                if not self.is_rnn_before_mlp:
-                    rnn_in_size = out_size
-                    out_size = self.rnn_units
-                    if self.rnn_concat_input:
-                        rnn_in_size += in_mlp_shape
+                mlp_input_shape = self._calc_input_size(input_shape, nn.Sequential())
+                in_mlp_shape = mlp_input_shape
+                if len(self.units) == 0:
+                    out_size = mlp_input_shape
                 else:
-                    rnn_in_size =  in_mlp_shape
-                    in_mlp_shape = self.rnn_units
-
-                if self.separate:
-                    self.a_rnn = self._build_rnn(self.rnn_name, rnn_in_size, self.rnn_units, self.rnn_layers)
-                    self.c_rnn = self._build_rnn(self.rnn_name, rnn_in_size, self.rnn_units, self.rnn_layers)
-                    if self.rnn_ln:
-                        self.a_layer_norm = torch.nn.LayerNorm(self.rnn_units)
-                        self.c_layer_norm = torch.nn.LayerNorm(self.rnn_units)
-                else:
-                    self.rnn = self._build_rnn(self.rnn_name, rnn_in_size, self.rnn_units, self.rnn_layers)
-                    if self.rnn_ln:
-                        self.layer_norm = torch.nn.LayerNorm(self.rnn_units)
-
-            mlp_args = {
-                'input_size' : in_mlp_shape, 
-                'units' : self.units, 
-                'activation' : self.activation, 
-                'norm_func_name' : self.normalization,
-                'dense_func' : torch.nn.Linear,
-                'd2rl' : self.is_d2rl,
-                'norm_only_first_layer' : self.norm_only_first_layer
-            }
-            self.actor_mlp = self._build_mlp(**mlp_args)
-            if self.separate:
+                    out_size = self.units[-1]
+                mlp_args = {
+                    'input_size' : in_mlp_shape,
+                    'units' : self.units,
+                    'activation' : self.activation,
+                    'norm_func_name' : self.normalization,
+                    'dense_func' : torch.nn.Linear,
+                    'd2rl' : self.is_d2rl,
+                    'norm_only_first_layer' : self.norm_only_first_layer
+                }
                 self.critic_mlp = self._build_mlp(**mlp_args)
 
-            self.value = torch.nn.Linear(out_size, self.value_size)
-            self.value_act = self.activations_factory.create(self.value_activation)
+                self.value = torch.nn.Linear(out_size, self.value_size)
+                self.value_act = self.activations_factory.create(self.value_activation)
+            else:
+                self.actor_cnn = nn.Sequential()
+                self.critic_cnn = nn.Sequential()
+                self.actor_mlp = nn.Sequential()
+                self.critic_mlp = nn.Sequential()
 
-            if self.is_discrete:
-                self.logits = torch.nn.Linear(out_size, actions_num)
-            '''
-                for multidiscrete actions num is a tuple
-            '''
-            if self.is_multi_discrete:
-                self.logits = torch.nn.ModuleList([torch.nn.Linear(out_size, num) for num in actions_num])
-            if self.is_continuous:
-                self.mu = torch.nn.Linear(out_size, actions_num)
-                self.mu_act = self.activations_factory.create(self.space_config['mu_activation']) 
-                mu_init = self.init_factory.create(**self.space_config['mu_init'])
-                self.sigma_act = self.activations_factory.create(self.space_config['sigma_activation']) 
-                sigma_init = self.init_factory.create(**self.space_config['sigma_init'])
+                if self.has_cnn:
+                    if self.permute_input:
+                        input_shape = torch_ext.shape_whc_to_cwh(input_shape)
+                    cnn_args = {
+                        'ctype' : self.cnn['type'],
+                        'input_shape' : input_shape,
+                        'convs' :self.cnn['convs'],
+                        'activation' : self.cnn['activation'],
+                        'norm_func_name' : self.normalization,
+                    }
+                    self.actor_cnn = self._build_conv(**cnn_args)
 
-                if self.fixed_sigma:
-                    self.sigma = nn.Parameter(torch.zeros(actions_num, requires_grad=True, dtype=torch.float32), requires_grad=True)
+                    if self.separate:
+                        self.critic_cnn = self._build_conv( **cnn_args)
+
+                mlp_input_shape = self._calc_input_size(input_shape, self.actor_cnn)
+
+                in_mlp_shape = mlp_input_shape
+                if len(self.units) == 0:
+                    out_size = mlp_input_shape
                 else:
-                    self.sigma = torch.nn.Linear(out_size, actions_num)
+                    out_size = self.units[-1]
 
-            mlp_init = self.init_factory.create(**self.initializer)
-            if self.has_cnn:
-                cnn_init = self.init_factory.create(**self.cnn['initializer'])
+                if self.has_rnn:
+                    if not self.is_rnn_before_mlp:
+                        rnn_in_size = out_size
+                        out_size = self.rnn_units
+                        if self.rnn_concat_input:
+                            rnn_in_size += in_mlp_shape
+                    else:
+                        rnn_in_size =  in_mlp_shape
+                        in_mlp_shape = self.rnn_units
 
-            for m in self.modules():         
-                if isinstance(m, nn.Conv2d) or isinstance(m, nn.Conv1d):
-                    cnn_init(m.weight)
-                    if getattr(m, "bias", None) is not None:
-                        torch.nn.init.zeros_(m.bias)
-                if isinstance(m, nn.Linear):
-                    mlp_init(m.weight)
-                    if getattr(m, "bias", None) is not None:
-                        torch.nn.init.zeros_(m.bias)    
+                    if self.separate:
+                        self.a_rnn = self._build_rnn(self.rnn_name, rnn_in_size, self.rnn_units, self.rnn_layers)
+                        self.c_rnn = self._build_rnn(self.rnn_name, rnn_in_size, self.rnn_units, self.rnn_layers)
+                        if self.rnn_ln:
+                            self.a_layer_norm = torch.nn.LayerNorm(self.rnn_units)
+                            self.c_layer_norm = torch.nn.LayerNorm(self.rnn_units)
+                    else:
+                        self.rnn = self._build_rnn(self.rnn_name, rnn_in_size, self.rnn_units, self.rnn_layers)
+                        if self.rnn_ln:
+                            self.layer_norm = torch.nn.LayerNorm(self.rnn_units)
 
-            if self.is_continuous:
-                mu_init(self.mu.weight)
-                if self.fixed_sigma:
-                    sigma_init(self.sigma)
-                else:
-                    sigma_init(self.sigma.weight)  
+                mlp_args = {
+                    'input_size' : in_mlp_shape,
+                    'units' : self.units,
+                    'activation' : self.activation,
+                    'norm_func_name' : self.normalization,
+                    'dense_func' : torch.nn.Linear,
+                    'd2rl' : self.is_d2rl,
+                    'norm_only_first_layer' : self.norm_only_first_layer
+                }
+                self.actor_mlp = self._build_mlp(**mlp_args)
+                if self.separate:
+                    self.critic_mlp = self._build_mlp(**mlp_args)
+
+                self.value = torch.nn.Linear(out_size, self.value_size)
+                self.value_act = self.activations_factory.create(self.value_activation)
+
+                if self.is_discrete:
+                    self.logits = torch.nn.Linear(out_size, actions_num)
+                '''
+                    for multidiscrete actions num is a tuple
+                '''
+                if self.is_multi_discrete:
+                    self.logits = torch.nn.ModuleList([torch.nn.Linear(out_size, num) for num in actions_num])
+                if self.is_continuous:
+                    self.mu = torch.nn.Linear(out_size, actions_num)
+                    self.mu_act = self.activations_factory.create(self.space_config['mu_activation'])
+                    mu_init = self.init_factory.create(**self.space_config['mu_init'])
+                    self.sigma_act = self.activations_factory.create(self.space_config['sigma_activation'])
+                    sigma_init = self.init_factory.create(**self.space_config['sigma_init'])
+
+                    if self.fixed_sigma:
+                        self.sigma = nn.Parameter(torch.zeros(actions_num, requires_grad=True, dtype=torch.float32), requires_grad=True)
+                    else:
+                        self.sigma = torch.nn.Linear(out_size, actions_num)
+
+                mlp_init = self.init_factory.create(**self.initializer)
+                if self.has_cnn:
+                    cnn_init = self.init_factory.create(**self.cnn['initializer'])
+
+                for m in self.modules():
+                    if isinstance(m, nn.Conv2d) or isinstance(m, nn.Conv1d):
+                        cnn_init(m.weight)
+                        if getattr(m, "bias", None) is not None:
+                            torch.nn.init.zeros_(m.bias)
+                    if isinstance(m, nn.Linear):
+                        mlp_init(m.weight)
+                        if getattr(m, "bias", None) is not None:
+                            torch.nn.init.zeros_(m.bias)
+
+                if self.is_continuous:
+                    mu_init(self.mu.weight)
+                    if self.fixed_sigma:
+                        sigma_init(self.sigma)
+                    else:
+                        sigma_init(self.sigma.weight)
 
         def forward(self, obs_dict):
             obs = obs_dict['obs']
@@ -301,137 +349,166 @@ class A2CBuilder(NetworkBuilder):
                 if self.permute_input and len(obs.shape) == 4:
                     obs = obs.permute((0, 3, 1, 2))
 
-            if self.separate:
+            if self.ckpt_path is not None:
                 a_out = c_out = obs
-                a_out = self.actor_cnn(a_out)
-                a_out = a_out.contiguous().view(a_out.size(0), -1)
 
                 c_out = self.critic_cnn(c_out)
-                c_out = c_out.contiguous().view(c_out.size(0), -1)                    
-
-                if self.has_rnn:
-                    if not self.is_rnn_before_mlp:
-                        a_out_in = a_out
-                        c_out_in = c_out
-                        a_out = self.actor_mlp(a_out_in)
-                        c_out = self.critic_mlp(c_out_in)
-
-                        if self.rnn_concat_input:
-                            a_out = torch.cat([a_out, a_out_in], dim=1)
-                            c_out = torch.cat([c_out, c_out_in], dim=1)
-
-                    batch_size = a_out.size()[0]
-                    num_seqs = batch_size // seq_length
-                    a_out = a_out.reshape(num_seqs, seq_length, -1)
-                    c_out = c_out.reshape(num_seqs, seq_length, -1)
-
-                    a_out = a_out.transpose(0,1)
-                    c_out = c_out.transpose(0,1)
-                    if dones is not None:
-                        dones = dones.reshape(num_seqs, seq_length, -1)
-                        dones = dones.transpose(0,1)
-
-                    if len(states) == 2:
-                        a_states = states[0]
-                        c_states = states[1]
-                    else:
-                        a_states = states[:2]
-                        c_states = states[2:]                        
-                    a_out, a_states = self.a_rnn(a_out, a_states, dones, bptt_len)
-                    c_out, c_states = self.c_rnn(c_out, c_states, dones, bptt_len)
-
-                    a_out = a_out.transpose(0,1)
-                    c_out = c_out.transpose(0,1)
-                    a_out = a_out.contiguous().reshape(a_out.size()[0] * a_out.size()[1], -1)
-                    c_out = c_out.contiguous().reshape(c_out.size()[0] * c_out.size()[1], -1)
-                    if self.rnn_ln:
-                        a_out = self.a_layer_norm(a_out)
-                        c_out = self.c_layer_norm(c_out)
-                    if type(a_states) is not tuple:
-                        a_states = (a_states,)
-                        c_states = (c_states,)
-                    states = a_states + c_states
-
-                    if self.is_rnn_before_mlp:
-                        a_out = self.actor_mlp(a_out)
-                        c_out = self.critic_mlp(c_out)
-                else:
-                    a_out = self.actor_mlp(a_out)
-                    c_out = self.critic_mlp(c_out)
-                            
+                c_out = c_out.contiguous().view(c_out.size(0), -1)
+                c_out = self.critic_mlp(c_out)
                 value = self.value_act(self.value(c_out))
 
-                if self.is_discrete:
-                    logits = self.logits(a_out)
-                    return logits, value, states
+                batch_size = obs.size()[0]
+                num_seqs = batch_size // seq_length
+                obs = obs.reshape(num_seqs, seq_length, -1)
 
-                if self.is_multi_discrete:
-                    logits = [logit(a_out) for logit in self.logits]
-                    return logits, value, states
+                robomimic_obs = OrderedDict(
+                    object = obs[:, :, :35],
+                    joint_pos = obs[:, :, 35:42],
+                    joint_vel = obs[:, :, 42:49],
+                    gripper_qpos = obs[:, :, 49:51],
+                    eef_pos = obs[:, :, 51:54],
+                    eef_quat = obs[:, :, 54:58],
+                    eef_velp = obs[:, :, 58:61],
+                    eef_velr = obs[:, :, 61:64],
+                    primitive_id = obs[:, :, 64:65],
+                )
 
-                if self.is_continuous:
-                    mu = self.mu_act(self.mu(a_out))
-                    if self.fixed_sigma:
-                        sigma = mu * 0.0 + self.sigma_act(self.sigma)
-                    else:
-                        sigma = self.sigma_act(self.sigma(a_out))
-
-                    return mu, sigma, value, states
+                a_out, states = self.policy.policy.nets["policy"](obs_dict=robomimic_obs, goal_dict=None, return_state=True, rnn_init_state=states[:2])
+                mu = a_out[:, 0]
+                sigma = torch.zeros_like(mu, device=mu.device)
+                return mu, sigma, value, states
             else:
-                out = obs
-                out = self.actor_cnn(out)
-                out = out.flatten(1)                
+                if self.separate:
+                    a_out = c_out = obs
+                    a_out = self.actor_cnn(a_out)
+                    a_out = a_out.contiguous().view(a_out.size(0), -1)
 
-                if self.has_rnn:
-                    out_in = out
-                    if not self.is_rnn_before_mlp:
-                        out_in = out
-                        out = self.actor_mlp(out)
-                        if self.rnn_concat_input:
-                            out = torch.cat([out, out_in], dim=1)
+                    c_out = self.critic_cnn(c_out)
+                    c_out = c_out.contiguous().view(c_out.size(0), -1)
 
-                    batch_size = out.size()[0]
-                    num_seqs = batch_size // seq_length
-                    out = out.reshape(num_seqs, seq_length, -1)
+                    if self.has_rnn:
+                        if not self.is_rnn_before_mlp:
+                            a_out_in = a_out
+                            c_out_in = c_out
+                            a_out = self.actor_mlp(a_out_in)
+                            c_out = self.critic_mlp(c_out_in)
 
-                    if len(states) == 1:
-                        states = states[0]
+                            if self.rnn_concat_input:
+                                a_out = torch.cat([a_out, a_out_in], dim=1)
+                                c_out = torch.cat([c_out, c_out_in], dim=1)
 
-                    out = out.transpose(0, 1)
-                    if dones is not None:
-                        dones = dones.reshape(num_seqs, seq_length, -1)
-                        dones = dones.transpose(0, 1)
-                    out, states = self.rnn(out, states, dones, bptt_len)
-                    out = out.transpose(0, 1)
-                    out = out.contiguous().reshape(out.size()[0] * out.size()[1], -1)
+                        batch_size = a_out.size()[0]
+                        num_seqs = batch_size // seq_length
+                        a_out = a_out.reshape(num_seqs, seq_length, -1)
+                        c_out = c_out.reshape(num_seqs, seq_length, -1)
 
-                    if self.rnn_ln:
-                        out = self.layer_norm(out)
-                    if self.is_rnn_before_mlp:
-                        out = self.actor_mlp(out)
-                    if type(states) is not tuple:
-                        states = (states,)
-                else:
-                    out = self.actor_mlp(out)
-                value = self.value_act(self.value(out))
+                        a_out = a_out.transpose(0,1)
+                        c_out = c_out.transpose(0,1)
+                        if dones is not None:
+                            dones = dones.reshape(num_seqs, seq_length, -1)
+                            dones = dones.transpose(0,1)
 
-                if self.central_value:
-                    return value, states
+                        if len(states) == 2:
+                            a_states = states[0]
+                            c_states = states[1]
+                        else:
+                            a_states = states[:2]
+                            c_states = states[2:]
+                        a_out, a_states = self.a_rnn(a_out, a_states, dones, bptt_len)
+                        c_out, c_states = self.c_rnn(c_out, c_states, dones, bptt_len)
 
-                if self.is_discrete:
-                    logits = self.logits(out)
-                    return logits, value, states
-                if self.is_multi_discrete:
-                    logits = [logit(out) for logit in self.logits]
-                    return logits, value, states
-                if self.is_continuous:
-                    mu = self.mu_act(self.mu(out))
-                    if self.fixed_sigma:
-                        sigma = self.sigma_act(self.sigma)
+                        a_out = a_out.transpose(0,1)
+                        c_out = c_out.transpose(0,1)
+                        a_out = a_out.contiguous().reshape(a_out.size()[0] * a_out.size()[1], -1)
+                        c_out = c_out.contiguous().reshape(c_out.size()[0] * c_out.size()[1], -1)
+                        if self.rnn_ln:
+                            a_out = self.a_layer_norm(a_out)
+                            c_out = self.c_layer_norm(c_out)
+                        if type(a_states) is not tuple:
+                            a_states = (a_states,)
+                            c_states = (c_states,)
+                        states = a_states + c_states
+
+                        if self.is_rnn_before_mlp:
+                            a_out = self.actor_mlp(a_out)
+                            c_out = self.critic_mlp(c_out)
                     else:
-                        sigma = self.sigma_act(self.sigma(out))
-                    return mu, mu*0 + sigma, value, states
-                    
+                        a_out = self.actor_mlp(a_out)
+                        c_out = self.critic_mlp(c_out)
+
+                    value = self.value_act(self.value(c_out))
+
+                    if self.is_discrete:
+                        logits = self.logits(a_out)
+                        return logits, value, states
+
+                    if self.is_multi_discrete:
+                        logits = [logit(a_out) for logit in self.logits]
+                        return logits, value, states
+
+                    if self.is_continuous:
+                        mu = self.mu_act(self.mu(a_out))
+                        if self.fixed_sigma:
+                            sigma = mu * 0.0 + self.sigma_act(self.sigma)
+                        else:
+                            sigma = self.sigma_act(self.sigma(a_out))
+
+                        return mu, sigma, value, states
+                else:
+                    out = obs
+                    out = self.actor_cnn(out)
+                    out = out.flatten(1)
+
+                    if self.has_rnn:
+                        out_in = out
+                        if not self.is_rnn_before_mlp:
+                            out_in = out
+                            out = self.actor_mlp(out)
+                            if self.rnn_concat_input:
+                                out = torch.cat([out, out_in], dim=1)
+
+                        batch_size = out.size()[0]
+                        num_seqs = batch_size // seq_length
+                        out = out.reshape(num_seqs, seq_length, -1)
+
+                        if len(states) == 1:
+                            states = states[0]
+
+                        out = out.transpose(0, 1)
+                        if dones is not None:
+                            dones = dones.reshape(num_seqs, seq_length, -1)
+                            dones = dones.transpose(0, 1)
+                        out, states = self.rnn(out, states, dones, bptt_len)
+                        out = out.transpose(0, 1)
+                        out = out.contiguous().reshape(out.size()[0] * out.size()[1], -1)
+
+                        if self.rnn_ln:
+                            out = self.layer_norm(out)
+                        if self.is_rnn_before_mlp:
+                            out = self.actor_mlp(out)
+                        if type(states) is not tuple:
+                            states = (states,)
+                    else:
+                        out = self.actor_mlp(out)
+                    value = self.value_act(self.value(out))
+
+                    if self.central_value:
+                        return value, states
+
+                    if self.is_discrete:
+                        logits = self.logits(out)
+                        return logits, value, states
+                    if self.is_multi_discrete:
+                        logits = [logit(out) for logit in self.logits]
+                        return logits, value, states
+                    if self.is_continuous:
+                        mu = self.mu_act(self.mu(out))
+                        if self.fixed_sigma:
+                            sigma = self.sigma_act(self.sigma)
+                        else:
+                            sigma = self.sigma_act(self.sigma(out))
+                        return mu, mu*0 + sigma, value, states
+
         def is_separate_critic(self):
             return self.separate
 
@@ -439,6 +516,9 @@ class A2CBuilder(NetworkBuilder):
             return self.has_rnn
 
         def get_default_rnn_state(self):
+            if self.ckpt_path is not None:
+                self.policy.policy.reset()
+                self.policy.policy.set_train()
             if not self.has_rnn:
                 return None
             num_layers = self.rnn_layers
@@ -448,19 +528,19 @@ class A2CBuilder(NetworkBuilder):
                 rnn_units = self.rnn_units
             if self.rnn_name == 'lstm':
                 if self.separate:
-                    return (torch.zeros((num_layers, self.num_seqs, rnn_units)), 
+                    return (torch.zeros((num_layers, self.num_seqs, rnn_units)),
                             torch.zeros((num_layers, self.num_seqs, rnn_units)),
-                            torch.zeros((num_layers, self.num_seqs, rnn_units)), 
+                            torch.zeros((num_layers, self.num_seqs, rnn_units)),
                             torch.zeros((num_layers, self.num_seqs, rnn_units)))
                 else:
-                    return (torch.zeros((num_layers, self.num_seqs, rnn_units)), 
+                    return (torch.zeros((num_layers, self.num_seqs, rnn_units)),
                             torch.zeros((num_layers, self.num_seqs, rnn_units)))
             else:
                 if self.separate:
-                    return (torch.zeros((num_layers, self.num_seqs, rnn_units)), 
+                    return (torch.zeros((num_layers, self.num_seqs, rnn_units)),
                             torch.zeros((num_layers, self.num_seqs, rnn_units)))
                 else:
-                    return (torch.zeros((num_layers, self.num_seqs, rnn_units)),)                
+                    return (torch.zeros((num_layers, self.num_seqs, rnn_units)),)
 
         def load(self, params):
             self.separate = params.get('separate', False)
@@ -475,6 +555,7 @@ class A2CBuilder(NetworkBuilder):
             self.has_space = 'space' in params
             self.central_value = params.get('central_value', False)
             self.joint_obs_actions_config = params.get('joint_obs_actions', None)
+            self.ckpt_path = params.get('ckpt_path', None)
 
             if self.has_space:
                 self.is_multi_discrete = 'multi_discrete'in params['space']
@@ -566,7 +647,7 @@ class ResidualBlock(nn.Module):
 
 class ImpalaSequential(nn.Module):
     def __init__(self, in_channels, out_channels, activation='relu', use_bn=False, use_zero_init=False):
-        super().__init__()    
+        super().__init__()
         self.conv = ConvBlock(in_channels, out_channels, use_bn)
         self.max_pool = nn.MaxPool2d(kernel_size=3, stride=2, padding=1)
         self.res_block1 = ResidualBlock(out_channels, activation=activation, use_bn=use_bn, use_zero_init=use_zero_init)
@@ -625,9 +706,9 @@ class A2CResnetBuilder(NetworkBuilder):
                 #self.layer_norm = torch.nn.LayerNorm(self.rnn_units)
 
             mlp_args = {
-                'input_size' : in_mlp_shape, 
-                'units' :self.units, 
-                'activation' : self.activation, 
+                'input_size' : in_mlp_shape,
+                'units' :self.units,
+                'activation' : self.activation,
                 'norm_func_name' : self.normalization,
                 'dense_func' : torch.nn.Linear
             }
@@ -636,14 +717,14 @@ class A2CResnetBuilder(NetworkBuilder):
 
             self.value = torch.nn.Linear(out_size, self.value_size)
             self.value_act = self.activations_factory.create(self.value_activation)
-            self.flatten_act = self.activations_factory.create(self.activation) 
+            self.flatten_act = self.activations_factory.create(self.activation)
             if self.is_discrete:
                 self.logits = torch.nn.Linear(out_size, actions_num)
             if self.is_continuous:
                 self.mu = torch.nn.Linear(out_size, actions_num)
-                self.mu_act = self.activations_factory.create(self.space_config['mu_activation']) 
+                self.mu_act = self.activations_factory.create(self.space_config['mu_activation'])
                 mu_init = self.init_factory.create(**self.space_config['mu_init'])
-                self.sigma_act = self.activations_factory.create(self.space_config['sigma_activation']) 
+                self.sigma_act = self.activations_factory.create(self.space_config['sigma_activation'])
                 sigma_init = self.init_factory.create(**self.space_config['sigma_init'])
 
                 if self.fixed_sigma:
@@ -658,7 +739,7 @@ class A2CResnetBuilder(NetworkBuilder):
                     nn.init.kaiming_normal_(m.weight, mode='fan_out', nonlinearity='relu')
                     #nn.init.xavier_uniform_(m.weight, gain=nn.init.calculate_gain('relu'))
             for m in self.mlp:
-                if isinstance(m, nn.Linear):    
+                if isinstance(m, nn.Linear):
                     mlp_init(m.weight)
 
             if self.is_discrete:
@@ -670,7 +751,7 @@ class A2CResnetBuilder(NetworkBuilder):
                 else:
                     sigma_init(self.sigma.weight)
 
-            mlp_init(self.value.weight)     
+            mlp_init(self.value.weight)
 
         def forward(self, obs_dict):
             if self.require_rewards or self.require_last_actions:
@@ -690,7 +771,7 @@ class A2CResnetBuilder(NetworkBuilder):
             seq_length = obs_dict.get('seq_length', 1)
             out = obs
             out = self.cnn(out)
-            out = out.flatten(1)         
+            out = out.flatten(1)
             out = self.flatten_act(out)
 
             if self.has_rnn:
@@ -759,7 +840,7 @@ class A2CResnetBuilder(NetworkBuilder):
             elif self.is_discrete:
                 self.space_config = params['space']['discrete']
             elif self.is_multi_discrete:
-                self.space_config = params['space']['multi_discrete']    
+                self.space_config = params['space']['multi_discrete']
             self.has_rnn = 'rnn' in params
             if self.has_rnn:
                 self.rnn_units = params['rnn']['units']
@@ -775,7 +856,7 @@ class A2CResnetBuilder(NetworkBuilder):
 
         def _build_impala(self, input_shape, depths):
             in_channels = input_shape[0]
-            layers = nn.ModuleList()    
+            layers = nn.ModuleList()
             for d in depths:
                 layers.append(ImpalaSequential(in_channels, d))
                 in_channels = d
@@ -790,10 +871,10 @@ class A2CResnetBuilder(NetworkBuilder):
         def get_default_rnn_state(self):
             num_layers = self.rnn_layers
             if self.rnn_name == 'lstm':
-                return (torch.zeros((num_layers, self.num_seqs, self.rnn_units)), 
+                return (torch.zeros((num_layers, self.num_seqs, self.rnn_units)),
                             torch.zeros((num_layers, self.num_seqs, self.rnn_units)))
             else:
-                return (torch.zeros((num_layers, self.num_seqs, self.rnn_units)))                
+                return (torch.zeros((num_layers, self.num_seqs, self.rnn_units)))
 
     def build(self, name, **kwargs):
         net = A2CResnetBuilder.Network(self.params, **kwargs)
@@ -876,9 +957,9 @@ class SACBuilder(NetworkBuilder):
             mlp_input_shape = input_shape
 
             actor_mlp_args = {
-                'input_size' : obs_dim, 
-                'units' : self.units, 
-                'activation' : self.activation, 
+                'input_size' : obs_dim,
+                'units' : self.units,
+                'activation' : self.activation,
                 'norm_func_name' : self.normalization,
                 'dense_func' : torch.nn.Linear,
                 'd2rl' : self.is_d2rl,
@@ -886,9 +967,9 @@ class SACBuilder(NetworkBuilder):
             }
 
             critic_mlp_args = {
-                'input_size' : obs_dim + action_dim, 
-                'units' : self.units, 
-                'activation' : self.activation, 
+                'input_size' : obs_dim + action_dim,
+                'units' : self.units,
+                'activation' : self.activation,
                 'norm_func_name' : self.normalization,
                 'dense_func' : torch.nn.Linear,
                 'd2rl' : self.is_d2rl,
@@ -902,7 +983,7 @@ class SACBuilder(NetworkBuilder):
                 self.critic = self._build_critic(1, **critic_mlp_args)
                 print("Building Critic Target")
                 self.critic_target = self._build_critic(1, **critic_mlp_args)
-                self.critic_target.load_state_dict(self.critic.state_dict())  
+                self.critic_target.load_state_dict(self.critic.state_dict())
 
             mlp_init = self.init_factory.create(**self.initializer)
             for m in self.modules():
@@ -926,7 +1007,7 @@ class SACBuilder(NetworkBuilder):
             obs = obs_dict['obs']
             mu, sigma = self.actor(obs)
             return mu, sigma
- 
+
         def is_separate_critic(self):
             return self.separate
 

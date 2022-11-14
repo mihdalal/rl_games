@@ -8,7 +8,7 @@ params:
 
   network:
     name: actor_critic
-    separate: False
+    separate: True
     space:
       continuous:
         mu_activation: None
@@ -24,11 +24,17 @@ params:
       activation: elu
       initializer:
         name: default
+    rnn:
+      name: 'lstm'
+      units: 400
+      layers: 2
+      before_mlp: True
+    # ckpt_path: "/home/mdalal/research/assembly/assembly/trained_models/bc_rnn_furniture_table_sawyer_state_gmm_False_v1/20221112232836/models/model_epoch_5500_sawyer_gen_success_0.9.pth"
 
   config:
-    name: Ant-v3_ray
-    env_name: openai_gym
-    score_to_win: 20000
+    name: IKEASawyerGen-v0
+    env_name: IKEASawyerGen-v0
+    score_to_win: 20000000
     normalize_input: True
     normalize_value: True
     value_bootstrap: True
@@ -38,17 +44,18 @@ params:
     gamma: 0.99
     tau: 0.95
 
-    learning_rate: 3e-4
+    learning_rate: 5e-4
     lr_schedule: adaptive
-    kl_threshold: 0.008
+    kl_threshold: 0.016
     grad_norm: 1.0
     entropy_coef: 0.0
     truncate_grads: True
     e_clip: 0.2
     max_epochs: 2000
-    num_actors: 64
-    horizon_length: 64
-    minibatch_size: 2048
+    num_actors: 50
+    horizon_length: 50
+    seq_length: 10
+    minibatch_size: 2500
     mini_epochs: 4
     critic_coef: 2
     clip_value: True
@@ -57,8 +64,7 @@ params:
     bounds_loss_coef: 0.0
 
     env_config:
-      name: Ant-v3
-      seed: 5
+      config_path: "/home/mdalal/research/assembly/robomimic/robomimic/exps/furniture/table/low_dim/bc_rnn.json"
 
     player:
       render: True

@@ -1,3 +1,6 @@
+import json
+
+from robomimic.config.base_config import config_factory
 import rl_games.envs.test
 from rl_games.common import wrappers
 from rl_games.common import tr_helpers
@@ -8,7 +11,10 @@ import gym
 from gym.wrappers import FlattenObservation, FilterObservation
 import numpy as np
 import math
-
+import furniture
+import robomimic.utils.env_utils as EnvUtils
+import robomimic.utils.file_utils as FileUtils
+import robomimic.utils.obs_utils as ObsUtils
 
 
 class HCRewardEnv(gym.RewardWrapper):
@@ -72,7 +78,7 @@ def create_goal_gym_env(**kwargs):
         env = wrappers.FrameStack(env, frames, False)
     if limit_steps:
         env = wrappers.LimitStepsWrapper(env)
-    return env 
+    return env
 
 def create_slime_gym_env(**kwargs):
     import slimevolleygym
@@ -81,7 +87,7 @@ def create_slime_gym_env(**kwargs):
     limit_steps = kwargs.pop('limit_steps', False)
     self_play = kwargs.pop('self_play', False)
     if self_play:
-        env = SlimeVolleySelfplay(name, **kwargs) 
+        env = SlimeVolleySelfplay(name, **kwargs)
     else:
         env = gym.make(name, **kwargs)
     return env
@@ -92,7 +98,7 @@ def create_connect_four_env(**kwargs):
     limit_steps = kwargs.pop('limit_steps', False)
     self_play = kwargs.pop('self_play', False)
     if self_play:
-        env = ConnectFourSelfPlay(name, **kwargs) 
+        env = ConnectFourSelfPlay(name, **kwargs)
     else:
         env = gym.make(name, **kwargs)
     return env
@@ -104,7 +110,7 @@ def create_atari_gym_env(**kwargs):
     episode_life = kwargs.pop('episode_life',True)
     wrap_impala = kwargs.pop('wrap_impala', False)
     env = wrappers.make_atari_deepmind(name, skip=skip,episode_life=episode_life, wrap_impala=wrap_impala, **kwargs)
-    return env    
+    return env
 
 def create_dm_control_env(**kwargs):
     frames = kwargs.pop('frames', 1)
@@ -144,11 +150,11 @@ def create_super_mario_env_stage1(name='SuperMarioBrosRandomStage1-v1'):
 
     env = gym_super_mario_bros.make(stage_names[1])
     env = JoypadSpace(env, SIMPLE_MOVEMENT)
-    
+
     env = wrappers.MaxAndSkipEnv(env, skip=4)
     env = wrappers.wrap_deepmind(env, episode_life=False, clip_rewards=False, frame_stack=True, scale=True)
     #env = wrappers.AllowBacktracking(env)
-    
+
     return env
 
 def create_quadrupped_env():
@@ -169,8 +175,8 @@ def create_smac(name, **kwargs):
     flatten = kwargs.pop('flatten', True)
     has_cv = kwargs.get('central_value', False)
     env = SMACEnv(name, **kwargs)
-    
-    
+
+
     if frames > 1:
         if has_cv:
             env = wrappers.BatchedFrameStackWithStates(env, frames, transpose=False, flatten=flatten)
@@ -188,7 +194,7 @@ def create_smac_cnn(name, **kwargs):
         env = wrappers.BatchedFrameStackWithStates(env, frames, transpose=transpose)
     else:
         env = wrappers.BatchedFrameStack(env, frames, transpose=transpose)
-        
+
     return env
 
 def create_test_env(name, **kwargs):
@@ -226,7 +232,7 @@ def create_minigrid_env(name, **kwargs):
 
 def create_multiwalker_env(**kwargs):
     from rl_games.envs.multiwalker import MultiWalker
-    env = MultiWalker('', **kwargs) 
+    env = MultiWalker('', **kwargs)
 
     return env
 
@@ -242,7 +248,37 @@ def create_env(name, **kwargs):
         env = wrappers.TimeLimit(env, steps_limit)
     return env
 
+def create_robomimic_env(config_path=None):
+    ext_cfg = json.load(open(config_path, "r"))
+    config = config_factory(ext_cfg["algo_name"])
+    # update config with external json - this will throw errors if
+    # the external config has keys not present in the base algo config
+    with config.values_unlocked():
+        config.update(ext_cfg)
+
+    # read config to set up metadata for observation modalities (e.g. detecting rgb observations)
+    ObsUtils.initialize_obs_utils_with_config(config)
+
+    env_meta = FileUtils.get_env_metadata_from_dataset(dataset_path=config.train.data)
+    shape_meta = FileUtils.get_shape_metadata_from_dataset(
+        dataset_path=config.train.data, all_obs_keys=config.all_obs_keys, verbose=True
+    )
+    env_name = env_meta['env_name']
+    env = EnvUtils.create_env_from_metadata(
+                env_meta=env_meta,
+                env_name=env_name,
+                render=False,
+                render_offscreen=config.experiment.render_video,
+                use_image_obs=shape_meta["use_images"],
+                return_flattened_obs=True,
+            )
+    return env
+
 configurations = {
+    'IKEASawyerGen-v0': {
+        'vecenv_type' : 'RAY',
+        'env_creator' : lambda **kwargs : create_robomimic_env(**kwargs),
+    },
     'CartPole-v1' : {
         'vecenv_type' : 'RAY',
         'env_creator' : lambda **kwargs : gym.make('CartPole-v1'),
@@ -405,7 +441,7 @@ configurations = {
     },
     'brax' : {
         'env_creator': lambda **kwargs: create_brax_env(**kwargs),
-        'vecenv_type': 'BRAX' 
+        'vecenv_type': 'BRAX'
     },
     'envpool': {
         'env_creator': lambda **kwargs: create_envpool(**kwargs),
@@ -428,12 +464,12 @@ def get_env_info(env):
     '''
     if isinstance(result_shapes['observation_space'], gym.spaces.dict.Dict):
         result_shapes['observation_space'] = observation_space['observations']
-    
+
     if isinstance(result_shapes['observation_space'], dict):
         result_shapes['observation_space'] = observation_space['observations']
         result_shapes['state_space'] = observation_space['states']
     '''
-    if hasattr(env, "value_size"):    
+    if hasattr(env, "value_size"):
         result_shapes['value_size'] = env.value_size
     print(result_shapes)
     return result_shapes
