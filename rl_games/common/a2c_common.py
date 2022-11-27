@@ -315,11 +315,15 @@ class A2CBase(BaseAlgorithm):
 
     def set_eval(self):
         self.model.eval()
+        if self.model.a2c_network.ckpt_path is not None:
+            self.model.a2c_network.policy.policy.set_eval()
         if self.normalize_rms_advantage:
             self.advantage_mean_std.eval()
 
     def set_train(self):
         self.model.train()
+        if self.model.a2c_network.ckpt_path is not None:
+            self.model.a2c_network.policy.policy.set_train()
         if self.normalize_rms_advantage:
             self.advantage_mean_std.train()
 
@@ -469,6 +473,8 @@ class A2CBase(BaseAlgorithm):
 
     def env_reset(self):
         obs = self.vec_env.reset()
+        if self.model.a2c_network.ckpt_path is not None:
+            self.model.a2c_network.policy.policy.reset()
         obs = self.obs_to_tensors(obs)
         return obs
 

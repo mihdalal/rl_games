@@ -230,6 +230,12 @@ class A2CBuilder(NetworkBuilder):
 
                 self.value = torch.nn.Linear(out_size, self.value_size)
                 self.value_act = self.activations_factory.create(self.value_activation)
+
+                if self.is_continuous:
+                    self.sigma_act = self.activations_factory.create(self.space_config['sigma_activation'])
+                    sigma_init = self.init_factory.create(**self.space_config['sigma_init'])
+                    if self.fixed_sigma:
+                        self.sigma = nn.Parameter(torch.zeros(actions_num, requires_grad=True, dtype=torch.float32), requires_grad=True)
             else:
                 self.actor_cnn = nn.Sequential()
                 self.critic_cnn = nn.Sequential()
@@ -361,21 +367,36 @@ class A2CBuilder(NetworkBuilder):
                 num_seqs = batch_size // seq_length
                 obs = obs.reshape(num_seqs, seq_length, -1)
 
-                robomimic_obs = OrderedDict(
-                    object = obs[:, :, :35],
-                    joint_pos = obs[:, :, 35:42],
-                    joint_vel = obs[:, :, 42:49],
-                    gripper_qpos = obs[:, :, 49:51],
-                    eef_pos = obs[:, :, 51:54],
-                    eef_quat = obs[:, :, 54:58],
-                    eef_velp = obs[:, :, 58:61],
-                    eef_velr = obs[:, :, 61:64],
-                    primitive_id = obs[:, :, 64:65],
-                )
-
-                a_out, states = self.policy.policy.nets["policy"](obs_dict=robomimic_obs, goal_dict=None, return_state=True, rnn_init_state=states[:2])
-                mu = a_out[:, 0]
-                sigma = torch.zeros_like(mu, device=mu.device)
+                if not self.policy.policy.nets.training:
+                    robomimic_obs = OrderedDict(
+                        object = obs[:, 0, :35],
+                        joint_pos = obs[:, 0, 35:42],
+                        joint_vel = obs[:, 0, 42:49],
+                        gripper_qpos = obs[:, 0, 49:51],
+                        eef_pos = obs[:, 0, 51:54],
+                        eef_quat = obs[:, 0, 54:58],
+                        eef_velp = obs[:, 0, 58:61],
+                        eef_velr = obs[:, 0, 61:64],
+                        primitive_id = obs[:, 0, 64:65],
+                    )
+                    a_out = self.policy.policy.get_action(obs_dict=robomimic_obs, goal_dict=None) # ignoring states from rl games to see if that is cauisng the issue in rollouts
+                    mu = a_out
+                else:
+                    robomimic_obs = OrderedDict(
+                        object = obs[:, :, :35],
+                        joint_pos = obs[:, :, 35:42],
+                        joint_vel = obs[:, :, 42:49],
+                        gripper_qpos = obs[:, :, 49:51],
+                        eef_pos = obs[:, :, 51:54],
+                        eef_quat = obs[:, :, 54:58],
+                        eef_velp = obs[:, :, 58:61],
+                        eef_velr = obs[:, :, 61:64],
+                        primitive_id = obs[:, :, 64:65],
+                    )
+                    a_out = self.policy.policy.nets["policy"](obs_dict=robomimic_obs, goal_dict=None)
+                    mu = a_out.reshape(a_out.size()[0] * a_out.size()[1], -1) # (BxTxD) -> ((BxT)xD)
+                if self.fixed_sigma:
+                    sigma = mu * 0.0 + self.sigma_act(self.sigma)
                 return mu, sigma, value, states
             else:
                 if self.separate:
@@ -516,9 +537,6 @@ class A2CBuilder(NetworkBuilder):
             return self.has_rnn
 
         def get_default_rnn_state(self):
-            if self.ckpt_path is not None:
-                self.policy.policy.reset()
-                self.policy.policy.set_train()
             if not self.has_rnn:
                 return None
             num_layers = self.rnn_layers

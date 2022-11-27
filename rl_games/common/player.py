@@ -45,7 +45,7 @@ class BasePlayer(object):
         if 'deterministic' in self.player_config:
             self.is_deterministic = self.player_config['deterministic']
         else:
-            self.is_deterministic = self.player_config.get('determenistic', True)
+            self.is_deterministic = self.player_config.get('deterministic', True)
         self.n_game_life = self.player_config.get('n_game_life', 1)
         self.print_stats = self.player_config.get('print_stats', True)
         self.render_sleep = self.player_config.get('render_sleep', 0.002)
@@ -196,6 +196,8 @@ class BasePlayer(object):
             if need_init_rnn:
                 self.init_rnn()
                 need_init_rnn = False
+            if self.model.a2c_network.ckpt_path is not None:
+                self.model.a2c_network.policy.policy.reset()
 
             cr = torch.zeros(batch_size, dtype=torch.float32)
             steps = torch.zeros(batch_size, dtype=torch.float32)
@@ -252,6 +254,7 @@ class BasePlayer(object):
                         else:
                             print('reward:', cur_rewards/done_count,
                                   'steps:', cur_steps/done_count)
+
 
                     sum_game_res += game_res
                     if batch_size//self.num_agents == 1 or games_played >= n_games:
