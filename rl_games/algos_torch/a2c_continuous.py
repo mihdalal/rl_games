@@ -6,7 +6,7 @@ from rl_games.common import common_losses
 from rl_games.common import datasets
 
 from torch import optim
-import torch 
+import torch
 from torch import nn
 import numpy as np
 import gym
@@ -23,7 +23,7 @@ class A2CAgent(a2c_common.ContinuousA2CBase):
             'normalize_value' : self.normalize_value,
             'normalize_input': self.normalize_input,
         }
-        
+
         self.model = self.network.build(build_config)
         self.model.to(self.ppo_device)
         self.states = None
@@ -34,17 +34,17 @@ class A2CAgent(a2c_common.ContinuousA2CBase):
 
         if self.has_central_value:
             cv_config = {
-                'state_shape' : self.state_shape, 
+                'state_shape' : self.state_shape,
                 'value_size' : self.value_size,
-                'ppo_device' : self.ppo_device, 
-                'num_agents' : self.num_agents, 
+                'ppo_device' : self.ppo_device,
+                'num_agents' : self.num_agents,
                 'horizon_length' : self.horizon_length,
-                'num_actors' : self.num_actors, 
-                'num_actions' : self.actions_num, 
+                'num_actors' : self.num_actors,
+                'num_actions' : self.actions_num,
                 'seq_len' : self.seq_len,
                 'normalize_value' : self.normalize_value,
                 'network' : self.central_value_config['network'],
-                'config' : self.central_value_config, 
+                'config' : self.central_value_config,
                 'writter' : self.writer,
                 'max_epochs' : self.max_epochs,
                 'multi_gpu' : self.multi_gpu,
@@ -57,13 +57,13 @@ class A2CAgent(a2c_common.ContinuousA2CBase):
             self.value_mean_std = self.central_value_net.model.value_mean_std if self.has_central_value else self.model.value_mean_std
 
         self.has_value_loss = (self.has_central_value and self.use_experimental_cv) \
-                            or (not self.has_phasic_policy_gradients and not self.has_central_value) 
+                            or (not self.has_phasic_policy_gradients and not self.has_central_value)
         self.algo_observer.after_init(self)
 
     def update_epoch(self):
         self.epoch_num += 1
         return self.epoch_num
-        
+
     def save(self, fn):
         state = self.get_full_state_weights()
         torch_ext.save_checkpoint(fn, state)
@@ -91,7 +91,7 @@ class A2CAgent(a2c_common.ContinuousA2CBase):
 
         batch_dict = {
             'is_train': True,
-            'prev_actions': actions_batch, 
+            'prev_actions': actions_batch,
             'obs' : obs_batch,
         }
 
@@ -101,7 +101,7 @@ class A2CAgent(a2c_common.ContinuousA2CBase):
             batch_dict['rnn_states'] = input_dict['rnn_states']
             batch_dict['seq_length'] = self.seq_len
             batch_dict['dones'] = input_dict['dones']
-            
+
         with torch.cuda.amp.autocast(enabled=self.mixed_precision):
             res_dict = self.model(batch_dict)
             action_log_probs = res_dict['prev_neglogp']
@@ -126,14 +126,14 @@ class A2CAgent(a2c_common.ContinuousA2CBase):
             a_loss, c_loss, entropy, b_loss = losses[0], losses[1], losses[2], losses[3]
 
             loss = a_loss + 0.5 * c_loss * self.critic_coef - entropy * self.entropy_coef + b_loss * self.bounds_loss_coef
-            
+
             if self.multi_gpu:
                 self.optimizer.zero_grad()
             else:
                 for param in self.model.parameters():
                     param.grad = None
 
-        self.scaler.scale(loss).backward()
+        self.scaler.scale(loss).backward(retain_graph=True) # TODO: for fixed sigma training, seems to break otherwise
         #TODO: Refactor this ugliest code of they year
         self.trancate_gradients_and_step()
 
@@ -150,7 +150,7 @@ class A2CAgent(a2c_common.ContinuousA2CBase):
             'new_neglogp' : action_log_probs,
             'old_neglogp' : old_action_log_probs_batch,
             'masks' : rnn_masks
-        }, curr_e_clip, 0)      
+        }, curr_e_clip, 0)
 
         self.train_result = (a_loss, c_loss, entropy, \
             kl_dist, self.last_lr, lr_mul, \

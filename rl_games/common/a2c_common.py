@@ -181,6 +181,7 @@ class A2CBase(BaseAlgorithm):
         print('current training device:', self.ppo_device)
         self.game_rewards = torch_ext.AverageMeter(self.value_size, self.games_to_track).to(self.ppo_device)
         self.game_lengths = torch_ext.AverageMeter(1, self.games_to_track).to(self.ppo_device)
+        self.game_success = torch_ext.AverageMeter(1, self.games_to_track).to(self.ppo_device)
         self.obs = None
         self.games_num = self.config['minibatch_size'] // self.seq_len # it is used only for current rnn implementation
         self.batch_size = self.horizon_length * self.num_actors * self.num_agents
@@ -730,7 +731,8 @@ class A2CBase(BaseAlgorithm):
                     s[:, all_done_indices, :] = s[:, all_done_indices, :] * 0.0
                 if self.has_central_value:
                     self.central_value_net.post_step_rnn(all_done_indices)
-
+                if self.model.a2c_network.ckpt_path is not None:
+                    self.model.a2c_network.policy.policy.reset()
             self.game_rewards.update(self.current_rewards[env_done_indices])
             self.game_lengths.update(self.current_lengths[env_done_indices])
             self.algo_observer.process_infos(infos, env_done_indices)
@@ -739,9 +741,9 @@ class A2CBase(BaseAlgorithm):
 
             self.current_rewards = self.current_rewards * not_dones.unsqueeze(1)
             self.current_lengths = self.current_lengths * not_dones
-
         last_values = self.get_values(self.obs)
-
+        print([info['success'] for info in infos])
+        self.game_success.update(torch.tensor([info['success'] for info in infos]))
         fdones = self.dones.float()
         mb_fdones = self.experience_buffer.tensor_dict['dones'].float()
 
@@ -1208,6 +1210,7 @@ class ContinuousA2CBase(A2CBase):
                 if self.game_rewards.current_size > 0:
                     mean_rewards = self.game_rewards.get_mean()
                     mean_lengths = self.game_lengths.get_mean()
+                    success_rate = self.game_success.get_mean()
                     self.mean_rewards = mean_rewards[0]
 
                     for i in range(self.value_size):
@@ -1219,6 +1222,12 @@ class ContinuousA2CBase(A2CBase):
                     self.writer.add_scalar('episode_lengths/step', mean_lengths, frame)
                     self.writer.add_scalar('episode_lengths/iter', mean_lengths, epoch_num)
                     self.writer.add_scalar('episode_lengths/time', mean_lengths, total_time)
+
+                    self.writer.add_scalar('success_rate/step', success_rate, frame)
+                    self.writer.add_scalar('success_rate/iter', success_rate, epoch_num)
+                    self.writer.add_scalar('success_rate/time', success_rate, total_time)
+
+                    self.game_success.clear() # we don't care about running success rate
 
                     if self.has_self_play_config:
                         self.self_play_manager.update(self)

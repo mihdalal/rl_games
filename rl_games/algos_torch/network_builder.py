@@ -235,7 +235,8 @@ class A2CBuilder(NetworkBuilder):
                     self.sigma_act = self.activations_factory.create(self.space_config['sigma_activation'])
                     sigma_init = self.init_factory.create(**self.space_config['sigma_init'])
                     if self.fixed_sigma:
-                        self.sigma = nn.Parameter(torch.zeros(actions_num, requires_grad=True, dtype=torch.float32), requires_grad=True)
+                        # initialize as deterministic policy, since we train our policies using MSE loss
+                        self.sigma = nn.Parameter(torch.ones(actions_num, requires_grad=True, dtype=torch.float32), requires_grad=True).to(device) * -10
             else:
                 self.actor_cnn = nn.Sequential()
                 self.critic_cnn = nn.Sequential()
@@ -368,6 +369,7 @@ class A2CBuilder(NetworkBuilder):
                 obs = obs.reshape(num_seqs, seq_length, -1)
 
                 if not self.policy.policy.nets.training:
+                    assert obs.shape[1] == 1, obs.shape
                     robomimic_obs = OrderedDict(
                         object = obs[:, 0, :35],
                         joint_pos = obs[:, 0, 35:42],
@@ -379,7 +381,7 @@ class A2CBuilder(NetworkBuilder):
                         eef_velr = obs[:, 0, 61:64],
                         primitive_id = obs[:, 0, 64:65],
                     )
-                    a_out = self.policy.policy.get_action(obs_dict=robomimic_obs, goal_dict=None) # ignoring states from rl games to see if that is cauisng the issue in rollouts
+                    a_out = self.policy.policy.get_action(obs_dict=robomimic_obs, goal_dict=None) # ignoring states from rl games to see if that is causing the issue in rollouts
                     mu = a_out
                 else:
                     robomimic_obs = OrderedDict(

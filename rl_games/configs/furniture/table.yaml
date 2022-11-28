@@ -39,13 +39,13 @@ params:
     normalize_value: True
     value_bootstrap: True
     reward_shaper:
-      scale_value: 0.1
+      scale_value: 0.00001
     normalize_advantage: True
     gamma: 0.99
     tau: 0.95
 
     learning_rate: 5e-4
-    lr_schedule: adaptive
+    lr_schedule: null
     kl_threshold: 0.016
     grad_norm: 1.0
     entropy_coef: 0.0
@@ -53,9 +53,9 @@ params:
     e_clip: 0.2
     max_epochs: 2000
     num_actors: 10
-    horizon_length: 200
+    horizon_length: 1000
     seq_length: 10
-    minibatch_size: 2000
+    minibatch_size: 10000
     mini_epochs: 4
     critic_coef: 2
     clip_value: True
