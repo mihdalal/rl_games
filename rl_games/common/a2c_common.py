@@ -317,14 +317,14 @@ class A2CBase(BaseAlgorithm):
     def set_eval(self):
         self.model.eval()
         if self.model.a2c_network.ckpt_path is not None:
-            self.model.a2c_network.policy.policy.set_eval()
+            self.model.a2c_network.policy.set_eval()
         if self.normalize_rms_advantage:
             self.advantage_mean_std.eval()
 
     def set_train(self):
         self.model.train()
         if self.model.a2c_network.ckpt_path is not None:
-            self.model.a2c_network.policy.policy.set_train()
+            self.model.a2c_network.policy.set_train()
         if self.normalize_rms_advantage:
             self.advantage_mean_std.train()
 
@@ -475,7 +475,7 @@ class A2CBase(BaseAlgorithm):
     def env_reset(self):
         obs = self.vec_env.reset()
         if self.model.a2c_network.ckpt_path is not None:
-            self.model.a2c_network.policy.policy.reset()
+            self.model.a2c_network.policy.reset()
         obs = self.obs_to_tensors(obs)
         return obs
 
@@ -732,7 +732,7 @@ class A2CBase(BaseAlgorithm):
                 if self.has_central_value:
                     self.central_value_net.post_step_rnn(all_done_indices)
                 if self.model.a2c_network.ckpt_path is not None:
-                    self.model.a2c_network.policy.policy.reset()
+                    self.model.a2c_network.policy.reset()
             self.game_rewards.update(self.current_rewards[env_done_indices])
             self.game_lengths.update(self.current_lengths[env_done_indices])
             self.algo_observer.process_infos(infos, env_done_indices)
@@ -742,7 +742,7 @@ class A2CBase(BaseAlgorithm):
             self.current_rewards = self.current_rewards * not_dones.unsqueeze(1)
             self.current_lengths = self.current_lengths * not_dones
         last_values = self.get_values(self.obs)
-        print([info['success'] for info in infos])
+        print(np.mean([float(info['success']) for info in infos]))
         self.game_success.update(torch.tensor([info['success'] for info in infos]))
         fdones = self.dones.float()
         mb_fdones = self.experience_buffer.tensor_dict['dones'].float()

@@ -196,6 +196,8 @@ class A2CBuilder(NetworkBuilder):
                 self.policy, ckpt_dict = FileUtils.policy_from_checkpoint(
                     ckpt_path=self.ckpt_path, device=device, verbose=True
                 )
+                self.policy = self.policy.policy
+                self.nets = self.policy.nets
                 self.critic_cnn = nn.Sequential()
                 self.critic_mlp = nn.Sequential()
 
@@ -368,7 +370,7 @@ class A2CBuilder(NetworkBuilder):
                 num_seqs = batch_size // seq_length
                 obs = obs.reshape(num_seqs, seq_length, -1)
 
-                if not self.policy.policy.nets.training:
+                if not self.policy.nets.training:
                     assert obs.shape[1] == 1, obs.shape
                     robomimic_obs = OrderedDict(
                         object = obs[:, 0, :35],
@@ -381,7 +383,7 @@ class A2CBuilder(NetworkBuilder):
                         eef_velr = obs[:, 0, 61:64],
                         primitive_id = obs[:, 0, 64:65],
                     )
-                    a_out = self.policy.policy.get_action(obs_dict=robomimic_obs, goal_dict=None) # ignoring states from rl games to see if that is causing the issue in rollouts
+                    a_out = self.policy.get_action(obs_dict=robomimic_obs, goal_dict=None) # ignoring states from rl games to see if that is causing the issue in rollouts
                     mu = a_out
                 else:
                     robomimic_obs = OrderedDict(
@@ -395,7 +397,7 @@ class A2CBuilder(NetworkBuilder):
                         eef_velr = obs[:, :, 61:64],
                         primitive_id = obs[:, :, 64:65],
                     )
-                    a_out = self.policy.policy.nets["policy"](obs_dict=robomimic_obs, goal_dict=None)
+                    a_out = self.policy.nets["policy"](obs_dict=robomimic_obs, goal_dict=None)
                     mu = a_out.reshape(a_out.size()[0] * a_out.size()[1], -1) # (BxTxD) -> ((BxT)xD)
                 if self.fixed_sigma:
                     sigma = mu * 0.0 + self.sigma_act(self.sigma)
