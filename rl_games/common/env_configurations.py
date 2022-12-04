@@ -1,4 +1,5 @@
 import json
+import os
 
 from robomimic.config.base_config import config_factory
 import rl_games.envs.test
@@ -248,13 +249,16 @@ def create_env(name, **kwargs):
         env = wrappers.TimeLimit(env, steps_limit)
     return env
 
-def create_robomimic_env(config_path=None):
+def create_robomimic_env(config_path=None, render_offscreen=False, ):
     ext_cfg = json.load(open(config_path, "r"))
     config = config_factory(ext_cfg["algo_name"])
     # update config with external json - this will throw errors if
     # the external config has keys not present in the base algo config
     with config.values_unlocked():
         config.update(ext_cfg)
+
+    dataset_dir = config.train.data
+    dataset_dir = os.path.join(os.getenv("DATASET_DIR"), dataset_dir.split('datasets/')[-1])
 
     # read config to set up metadata for observation modalities (e.g. detecting rgb observations)
     ObsUtils.initialize_obs_utils_with_config(config)
@@ -268,7 +272,7 @@ def create_robomimic_env(config_path=None):
                 env_meta=env_meta,
                 env_name=env_name,
                 render=False,
-                render_offscreen=config.experiment.render_video,
+                render_offscreen=config.experiment.render_video or render_offscreen,
                 use_image_obs=shape_meta["use_images"],
                 return_flattened_obs=True,
             )
