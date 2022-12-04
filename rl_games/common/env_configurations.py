@@ -257,15 +257,15 @@ def create_robomimic_env(config_path=None, render_offscreen=False, ):
     with config.values_unlocked():
         config.update(ext_cfg)
 
-    dataset_dir = config.train.data
-    dataset_dir = os.path.join(os.getenv("DATASET_DIR"), dataset_dir.split('datasets/')[-1])
+    dataset_path = config.train.data
+    dataset_path = os.path.join(os.getenv("DATASET_DIR"), dataset_path.split('datasets/')[-1])
 
     # read config to set up metadata for observation modalities (e.g. detecting rgb observations)
     ObsUtils.initialize_obs_utils_with_config(config)
 
-    env_meta = FileUtils.get_env_metadata_from_dataset(dataset_path=config.train.data)
+    env_meta = FileUtils.get_env_metadata_from_dataset(dataset_path=dataset_path)
     shape_meta = FileUtils.get_shape_metadata_from_dataset(
-        dataset_path=config.train.data, all_obs_keys=config.all_obs_keys, verbose=True
+        dataset_path=dataset_path, all_obs_keys=config.all_obs_keys, verbose=True
     )
     env_name = env_meta['env_name']
     env = EnvUtils.create_env_from_metadata(
