@@ -42,7 +42,7 @@ class PpoPlayerContinuous(BasePlayer):
         self.model.eval()
         self.is_rnn = self.model.is_rnn()
 
-    def get_action(self, obs, is_deterministic = False):
+    def get_action(self, obs, is_deterministic = False, allow_grad=False):
         if self.has_batch_dimension == False:
             obs = unsqueeze_obs(obs)
         obs = self._preproc_obs(obs)
@@ -52,7 +52,7 @@ class PpoPlayerContinuous(BasePlayer):
             'obs' : obs,
             'rnn_states' : self.states
         }
-        with torch.no_grad():
+        with torch.set_grad_enabled(allow_grad):
             res_dict = self.model(input_dict)
         mu = res_dict['mus']
         action = res_dict['actions']
